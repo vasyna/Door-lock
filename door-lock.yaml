@@ -80,7 +80,7 @@ number:
     min_value: 10
     max_value: 100
     step: 1
-    initial_value: 50
+    initial_value: 40
     restore_value: yes
     unit_of_measurement: steps
     entity_category: CONFIG
