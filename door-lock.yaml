@@ -1,0 +1,547 @@
+substitutions:
+  device_name: door-lock.
+
+  # https://templates.blakadder.com/wemos_D1_Mini_ESP32.html
+  # https://www.androegg.de/shop/dfrobot-sfm-v1-7-fingerprint-fingerabdruck-biometrischer-touch-sensor-modul/
+  # https://github.com/dvb6666/esphome-components
+  
+  door_lock_closed_pin: GPIO17
+  door_lock_opened_pin: GPIO16
+  door_contact_pin: GPIO15
+
+  lock_stepper_step_pin: GPIO18
+  lock_stepper_dir_pin: GPIO19
+  lock_stepper_sleep_pin: GPIO23
+
+  uart_tx_pin: GPIO33
+  uart_rx_pin: GPIO14
+
+  sfm_sensor_power_pin: GPIO26
+  sfm_sensing_pin: GPIO13
+
+  rtttl_out_pin: GPIO4
+
+  button_pin: GPIO32
+  
+esphome:
+  name: ${device_name}
+
+external_components:
+  - source: github://dvb6666/esphome-components
+    refresh: 1sec
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+    advanced:
+      minimum_chip_revision: "3.1"
+      sram1_as_iram: true
+
+web_server:
+  port: 80
+  version: 3
+
+logger:
+  level: INFO
+
+packages:
+  config_base: !include __config_base.yaml
+
+time:
+  - platform: homeassistant
+
+# ==================== GLOBALS ====================
+globals: 
+  - id: alarm_state
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  - id: is_moving
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+# ==================== SWITCHES ====================
+switch:
+  - platform: template
+    name: "Motor Clockwise"
+    id: motor_clockwise_switch
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    entity_category: CONFIG
+
+# ==================== NUMBERS ====================
+number:
+  - platform: template
+    name: "Motor Main Steps"
+    id: motor_step_main_number
+    min_value: 10
+    max_value: 100
+    step: 1
+    initial_value: 50
+    restore_value: yes
+    unit_of_measurement: steps
+    entity_category: CONFIG
+    optimistic: yes
+  
+#   - platform: template
+#     name: "Motor Sub Steps"
+#     id: motor_step_sub_number
+#     min_value: 0
+#     max_value: 30
+#     step: 1
+#     initial_value: 10
+#     restore_value: yes
+#     unit_of_measurement: steps
+#     entity_category: CONFIG
+#     optimistic: yes
+
+  - platform: template
+    name: "Motor Steps Per Second"
+    id: motor_step_per_sec_number
+    min_value: 10
+    max_value: 500
+    step: 1
+    initial_value: 250
+    restore_value: yes
+    unit_of_measurement: steps/sec
+    entity_category: CONFIG
+    optimistic: yes
+
+  - platform: template
+    name: "SMF Finger ID"
+    id: finger_id_number
+    min_value: 1
+    max_value: 200
+    step: 1
+    initial_value: 200
+    restore_value: yes
+    optimistic: yes
+    mode: BOX
+    
+# ==================== BINARY SENSORS ====================
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: $door_lock_closed_pin
+      inverted: true
+    name: "Door lock closed"
+    id: door_lock_closed
+    on_state:
+      then:
+        - if:
+            condition:
+              binary_sensor.is_on: door_lock_closed
+            then:
+              - if:
+                  condition:
+                    lambda: 'return id(alarm_state);'
+                  then:
+                    - globals.set:
+                        id: alarm_state
+                        value: 'false'
+                    - rtttl.play: 'short:d=4,o=5,b=100:16e6'
+                    - logger.log: "Alarm reset - door closed"
+
+  - platform: gpio
+    pin:
+      number: $door_lock_opened_pin
+      inverted: true
+    name: "Door lock opened"
+    id: door_lock_opened
+    on_state:
+      then:
+        - if:
+            condition:
+              binary_sensor.is_on: door_lock_opened
+            then:
+              - if:
+                  condition:
+                    lambda: 'return id(alarm_state);'
+                  then:
+                    - globals.set:
+                        id: alarm_state
+                        value: 'false'
+                    - rtttl.play: 'short:d=4,o=5,b=100:16e6'
+                    - logger.log: "Alarm reset - door opened"
+
+  - platform: gpio
+    pin:
+      number: $door_contact_pin
+      inverted: false
+    name: "Door contact"
+    id: door_contact
+    device_class: door
+
+  - platform: gpio
+    pin:
+      number: $button_pin
+      mode: INPUT_PULLUP
+      inverted: true
+    id: button_inside
+    name: "Button Inside"
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_state:
+      then:
+        - logger.log: "Button inside pressed"
+        - if:
+            condition:
+              binary_sensor.is_off: door_lock_closed
+            then:
+              - script.execute: open_lock_script
+            else:
+              - script.execute: close_lock_script
+    
+  - platform: template
+    name: "Alarm State"
+    id: alarm_sensor
+    lambda: |-
+      return id(alarm_state);
+    entity_category: DIAGNOSTIC
+    icon: "mdi:alarm-light"
+    
+# ==================== BUTTONS ====================
+button:
+  - platform: template
+    name: "Reset Alarm"
+    on_press:
+      then:
+        - globals.set:
+            id: alarm_state
+            value: 'false'
+        - rtttl.play: 'short:d=4,o=5,b=100:16e6'
+        - logger.log: "Alarm manually reset"
+
+  - platform: template
+    name: "SFM Scan"
+    on_press:
+      then:
+        - fingerprint_sfm.start_scan
+
+  - platform: template
+    name: "SFM Register"
+    on_press:
+      then:
+        - fingerprint_sfm.start_register
+
+  - platform: template
+    name: "SFM Register ID"
+    on_press:
+      then:
+        # - lambda: |-
+        #     int desired_id = id(finger_id_number).state;
+        #     id(sfm_id).start_register(desired_id, 3, 2000);
+        - fingerprint_sfm.start_register:
+            finger_id: !lambda return id(finger_id_number).state;   # Укажите нужный ID (от 0 до 65535)
+            # role: 3          # Роль пользователя (по умолчанию 3)
+            # delay: 2s        # Время ожидания перед началом регистрации
+
+  - platform: template
+    name: "SFM Yellow Green"
+    on_press:
+      then:
+        - fingerprint_sfm.set_color:
+            start: YELLOW
+            end: GREEN
+            period: 2000ms
+            delay: 2000ms
+
+  - platform: template
+    name: "SFM Color from selects"
+    on_press:
+      then:
+        - lambda: |-
+            auto start = static_cast<fingerprint_sfm::SfmColor>(1 + id(color_start).active_index().value());
+            auto end = static_cast<fingerprint_sfm::SfmColor>(1 + id(color_end).active_index().value());
+            id(sfm_id).set_color(start, end);
+
+  - platform: template
+    name: "SFM Delete ID"
+    on_press:
+      then:
+        - fingerprint_sfm.delete: !lambda return id(finger_id_number).state;
+
+  - platform: template
+    name: "SFM Delete All"
+    on_press:
+      then:
+        - fingerprint_sfm.delete_all
+
+  - platform: template
+    name: Beep
+    on_press:
+      then:
+        - rtttl.play: 'star_wars:d=16,o=5,b=100:4e,4e,4e,8c,p,g,4e,8c,p,g,4e,4p,4b,4b,4b,8c6,p,g,4d#,8c,p,g,4e,8p'
+
+# ==================== SCRIPTS ====================
+script:
+  - id: close_lock_script
+    mode: queued
+    then:
+      - if:
+          condition:
+            lambda: "return id(is_moving);"
+          then:
+            - logger.log: "Already moving! Skipping."
+            - rtttl.play: 'two_short:d=4,o=5,b=100:16e6,16e6'
+          else:
+            - if:
+                condition:
+                  binary_sensor.is_off: door_lock_closed
+                then:
+                  - if:
+                      condition:
+                        binary_sensor.is_off: door_contact
+                      then:
+                        - globals.set:
+                            id: is_moving
+                            value: 'true'
+                        - logger.log: "Start locking. Move motor and wait sensor."
+                        - lambda: |-
+                            int direction = id(motor_clockwise_switch).state ? -1 : 1;
+                            id(lock_stepper).set_max_speed(id(motor_step_per_sec_number).state);            
+                            id(lock_stepper).report_position(0);
+                            id(lock_door_street).publish_state(LOCK_STATE_LOCKING);
+                            id(lock_stepper).set_target(direction * id(motor_step_main_number).state);
+                        - wait_until:
+                            condition:
+                              binary_sensor.is_on: door_lock_closed
+                            timeout: 1s
+                        # - lambda: |-
+                        #     ESP_LOGD("main", "Current position: %d", id(lock_stepper).current_position);
+                        - stepper.set_target:
+                            id: lock_stepper
+                            target: !lambda return id(lock_stepper).current_position;
+                        - if:
+                            condition:
+                              binary_sensor.is_on: door_lock_closed
+                            then:
+                              - logger.log: "Lock is closed."
+                              - globals.set:
+                                  id: alarm_state
+                                  value: 'false'
+                              - rtttl.play: 'short:d=4,o=5,b=100:16e6'
+                            else:
+                              - logger.log: "Lock is not closed!"
+                              - globals.set:
+                                  id: alarm_state
+                                  value: 'true'
+                              - rtttl.play: 'two_short:d=4,o=5,b=100:16e6,16e6'
+                        - globals.set:
+                            id: is_moving
+                            value: 'false'
+                      else:
+                        - logger.log: "Door is opened! Nothink to do."
+                        - rtttl.play: 'two_short:d=4,o=5,b=100:16e6,16e6'
+                else:
+                  - logger.log: "Lock is closed! Nothink to do."
+                  - rtttl.play: 'short:d=4,o=5,b=100:16e6'
+
+  - id: open_lock_script
+    mode: queued
+    then:
+      - if:
+          condition:
+            lambda: "return id(is_moving);"
+          then:
+            - logger.log: "Already moving! Skipping."
+            - rtttl.play: 'two_short:d=4,o=5,b=100:16e6,16e6'
+          else:
+            - if:
+                condition:
+                  binary_sensor.is_off: door_lock_opened
+                then:
+                  - globals.set:
+                      id: is_moving
+                      value: 'true'
+                  - logger.log: "Start unlocking. Move motor and wait sensor."
+                  - lambda: |-
+                      int direction = id(motor_clockwise_switch).state ? 1 : -1;
+                      id(lock_stepper).set_max_speed(id(motor_step_per_sec_number).state);            
+                      id(lock_stepper).report_position(0);
+                      id(lock_door_street).publish_state(LOCK_STATE_UNLOCKING);
+                      id(lock_stepper).set_target(direction * id(motor_step_main_number).state);
+                  - wait_until:
+                      condition:
+                        binary_sensor.is_on: door_lock_opened
+                      timeout: 1s
+                  # - lambda: |-
+                  #     ESP_LOGD("main", "Current position: %d", id(lock_stepper).current_position);
+                  - stepper.set_target:
+                      id: lock_stepper
+                      target: !lambda return id(lock_stepper).current_position;
+                  - if:
+                      condition:
+                        binary_sensor.is_on: door_lock_opened
+                      then:
+                        - logger.log: "Lock is opened."
+                        - globals.set:
+                            id: alarm_state
+                            value: 'false'
+                        - rtttl.play: 'short:d=4,o=5,b=100:16e6'
+                      else:
+                        - logger.log: "Lock is not opened!"
+                        - globals.set:
+                            id: alarm_state
+                            value: 'true'
+                        - rtttl.play: 'two_short:d=4,o=5,b=100:16e6,16e6'
+                  - globals.set:
+                      id: is_moving
+                      value: 'false'
+                else:
+                  - logger.log: "Lock is opened! Nothink to do."
+                  - rtttl.play: 'short:d=4,o=5,b=100:16e6'
+    
+# ==================== SELECT ====================
+select:
+  - platform: template
+    id: color_start
+    name: "SFM Color1 start"
+    optimistic: true
+    options:
+      - "YELLOW"
+      - "PURPLE"
+      - "RED"
+      - "CYAN"
+      - "GREEN"
+      - "BLUE"
+      - "OFF"
+    initial_option: "YELLOW"
+  - platform: template
+    id: color_end
+    name: "SFM Color2 end"
+    optimistic: true
+    options:
+      - "YELLOW"
+      - "PURPLE"
+      - "RED"
+      - "CYAN"
+      - "GREEN"
+      - "BLUE"
+      - "OFF"
+    initial_option: "OFF"
+
+# ==================== UART ====================
+uart:
+  tx_pin: $uart_tx_pin
+  rx_pin: $uart_rx_pin
+  baud_rate: 115200
+
+# ==================== FINGERPRINT SFM ====================
+fingerprint_sfm:
+  id: sfm_id
+  sensor_power_pin: $sfm_sensor_power_pin
+  sensing_pin: $sfm_sensing_pin
+  idle_period_to_sleep: 1s
+  error:
+    name: "SFM Error"
+  fingerprint_count:
+    name: "SFM Fingerprints count"
+  last_finger_id:
+    id: last_finger_id
+    name: "SFM Last Fingerprint ID"
+    force_update: true
+  on_finger_scan_start:
+    - fingerprint_sfm.set_color: BLUE
+  on_finger_scan_matched:
+    - lambda: |-
+        ESP_LOGI("lambda", "Fingerprint scanning finished successfully: UID=%d, role=%d", finger_id, role);
+    - fingerprint_sfm.set_color:
+        start: "GREEN"
+        end: "OFF"
+    # - rtttl.play: 'short:d=4,o=5,b=100:16e6'
+    - if:
+        condition:
+          lambda: 'return !id(is_moving);'
+        then:
+          - if:
+              condition:
+                lock.is_locked: lock_door_street
+              then:
+                - script.execute: open_lock_script
+              else:
+                - script.execute: close_lock_script
+    # - fingerprint_sfm.set_color:
+    #     start: "OFF"
+    #     end: "OFF"
+  on_finger_scan_unmatched:
+    - lambda: |-
+        ESP_LOGI("lambda", "Fingerprint scanning finished with unknown fingerprint");
+        id(last_finger_id).publish_state(0);
+    - fingerprint_sfm.set_color:
+        start: "RED"
+        end: "OFF"
+    - rtttl.play: 'siren:d=8,o=5,b=100:d,e,d,e,d,e,d,e'
+    # - fingerprint_sfm.set_color:
+    #     start: "OFF"
+    #     end: "OFF"
+  on_finger_scan_failed:
+    - lambda: |-
+        ESP_LOGW("lambda", "Fingerprint scanning failed with code %d", error_code);
+    - rtttl.play: 'two_short:d=4,o=5,b=100:16e6,16e6'
+  on_register_step_start:
+    - lambda: ESP_LOGI("lambda", "Registration step %d started. Please put your finger", step);
+    - fingerprint_sfm.set_color: !lambda "return step == 1 ? fingerprint_sfm::YELLOW : step == 2 ? fingerprint_sfm::PURPLE : fingerprint_sfm::BLUE;"
+  on_register_step_done:
+    - lambda: |-
+        if (step == 3)
+          ESP_LOGI("lambda", "Registration finished successfully. New UID: %d", finger_id);
+        else
+          ESP_LOGI("lambda", "Registration step %d done. Please releases your finger", step);
+  on_register_failed:
+    - lambda: |-
+        ESP_LOGW("lambda", "Register failed with code %d", error_code);
+
+# ==================== OUTPUT & RTTTL ====================
+output:
+  - platform: ledc
+    pin: $rtttl_out_pin
+    id: rtttl_out
+
+rtttl:
+  id: my_rtttl
+  output: rtttl_out
+  on_finished_playback:
+    - logger.log: 'Song ended!'
+
+# ==================== STEPPER ====================
+stepper:
+  - platform: a4988
+    id: lock_stepper
+    step_pin: $lock_stepper_step_pin
+    dir_pin: $lock_stepper_dir_pin
+    sleep_pin: $lock_stepper_sleep_pin
+    max_speed: 350 steps/s
+    acceleration: inf # 500
+    deceleration: inf # 500
+  # - platform: uln2003
+    # id: lock_stepper
+    # pin_a: $lock_stepper_a_pin
+    # pin_b: $lock_stepper_b_pin
+    # pin_c: $lock_stepper_c_pin
+    # pin_d: $lock_stepper_d_pin
+    # max_speed: 50 steps/s
+    # sleep_when_done: true
+    # acceleration: 50 steps/s^2
+    
+# ==================== STEPPER ====================
+lock:
+  - platform: template
+    name: "Lock door street"
+    id: lock_door_street
+    lambda: |-
+      if (id(door_lock_closed).state) {
+        return LOCK_STATE_LOCKED;
+      } else {
+        return LOCK_STATE_UNLOCKED;
+      }
+    lock_action:
+      - script.execute: close_lock_script
+    unlock_action:
+      - script.execute: open_lock_script
+    open_action:
+      - script.execute: open_lock_script
