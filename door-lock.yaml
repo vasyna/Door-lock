@@ -1,5 +1,5 @@
 substitutions:
-  device_name: door-lock.
+  device_name: door-lock
 
   # https://templates.blakadder.com/wemos_D1_Mini_ESP32.html
   # https://www.androegg.de/shop/dfrobot-sfm-v1-7-fingerprint-fingerabdruck-biometrischer-touch-sensor-modul/
@@ -291,55 +291,67 @@ script:
           else:
             - if:
                 condition:
-                  binary_sensor.is_off: door_lock_closed
+                  and:
+                    - binary_sensor.is_off: door_lock_opened
+                    - binary_sensor.is_off: door_lock_closed
                 then:
+                  - logger.log: "Door is unknow status! opening."
+                  - rtttl.play: 'two_short:d=4,o=5,b=100:16e6,16e6'
+                  - delay: 1s
+                  - script.execute: open_lock_script
+                else:
                   - if:
                       condition:
-                        binary_sensor.is_off: door_contact
+                        binary_sensor.is_off: door_lock_closed
                       then:
-                        - globals.set:
-                            id: is_moving
-                            value: 'true'
-                        - logger.log: "Start locking. Move motor and wait sensor."
-                        - lambda: |-
-                            int direction = id(motor_clockwise_switch).state ? -1 : 1;
-                            id(lock_stepper).set_max_speed(id(motor_step_per_sec_number).state);            
-                            id(lock_stepper).report_position(0);
-                            id(lock_door_street).publish_state(LOCK_STATE_LOCKING);
-                            id(lock_stepper).set_target(direction * id(motor_step_main_number).state);
-                        - wait_until:
-                            condition:
-                              binary_sensor.is_on: door_lock_closed
-                            timeout: 1s
-                        # - lambda: |-
-                        #     ESP_LOGD("main", "Current position: %d", id(lock_stepper).current_position);
-                        - stepper.set_target:
-                            id: lock_stepper
-                            target: !lambda return id(lock_stepper).current_position;
                         - if:
                             condition:
-                              binary_sensor.is_on: door_lock_closed
+                              binary_sensor.is_off: door_contact
                             then:
-                              - logger.log: "Lock is closed."
                               - globals.set:
-                                  id: alarm_state
-                                  value: 'false'
-                              - rtttl.play: 'short:d=4,o=5,b=100:16e6'
-                            else:
-                              - logger.log: "Lock is not closed!"
-                              - globals.set:
-                                  id: alarm_state
+                                  id: is_moving
                                   value: 'true'
+                              - logger.log: "Start locking. Move motor and wait sensor."
+                              - lambda: |-
+                                  int direction = id(motor_clockwise_switch).state ? -1 : 1;
+                                  id(lock_stepper).set_max_speed(id(motor_step_per_sec_number).state);            
+                                  id(lock_stepper).report_position(0);
+                                  id(lock_door_street).publish_state(LOCK_STATE_LOCKING);
+                                  id(lock_stepper).set_target(direction * id(motor_step_main_number).state);
+                              - wait_until:
+                                  condition:
+                                    binary_sensor.is_on: door_lock_closed
+                                  timeout: 1s
+                              # - lambda: |-
+                              #     ESP_LOGD("main", "Current position: %d", id(lock_stepper).current_position);
+                              - stepper.set_target:
+                                  id: lock_stepper
+                                  target: !lambda return id(lock_stepper).current_position;
+                              - if:
+                                  condition:
+                                    binary_sensor.is_on: door_lock_closed
+                                  then:
+                                    - logger.log: "Lock is closed."
+                                    - globals.set:
+                                        id: alarm_state
+                                        value: 'false'
+                                    - rtttl.play: 'short:d=4,o=5,b=100:16e6'
+                                  else:
+                                    - logger.log: "Lock is not closed!"
+                                    - globals.set:
+                                        id: alarm_state
+                                        value: 'true'
+                                    - rtttl.play: 'two_short:d=4,o=5,b=100:16e6,16e6'
+                              - globals.set:
+                                  id: is_moving
+                                  value: 'false'
+                            else:
+                              - logger.log: "Door is opened! Nothink to do."
                               - rtttl.play: 'two_short:d=4,o=5,b=100:16e6,16e6'
-                        - globals.set:
-                            id: is_moving
-                            value: 'false'
                       else:
-                        - logger.log: "Door is opened! Nothink to do."
-                        - rtttl.play: 'two_short:d=4,o=5,b=100:16e6,16e6'
-                else:
-                  - logger.log: "Lock is closed! Nothink to do."
-                  - rtttl.play: 'short:d=4,o=5,b=100:16e6'
+                        - logger.log: "Lock is closed! Nothink to do."
+                        - rtttl.play: 'short:d=4,o=5,b=100:16e6'
+                
 
   - id: open_lock_script
     mode: queued
