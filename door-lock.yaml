@@ -104,7 +104,7 @@ number:
     min_value: 10
     max_value: 500
     step: 1
-    initial_value: 250
+    initial_value: 350
     restore_value: yes
     unit_of_measurement: steps/sec
     entity_category: CONFIG
