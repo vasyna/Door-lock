@@ -184,13 +184,13 @@ binary_sensor:
     name: "Button Inside"
     filters:
       - delayed_on: 50ms
-      - delayed_off: 50ms
-    on_state:
+      - delayed_off: 1000ms
+    on_press:
       then:
         - logger.log: "Button inside pressed"
         - if:
             condition:
-              binary_sensor.is_off: door_lock_closed
+              lock.is_locked: lock_door_street
             then:
               - script.execute: open_lock_script
             else:
